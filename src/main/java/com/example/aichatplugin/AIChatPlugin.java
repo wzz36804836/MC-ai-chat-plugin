@@ -76,168 +76,9 @@ public class AIChatPlugin extends JavaPlugin {
     public void onEnable() {
         getLogger().info("正在启动 AI Chat Plugin v" + getDescription().getVersion() + "...");
         
-        // 🔧 紧急修复：检查配置文件是否损坏
-        checkAndRepairConfig();
-        
-        // 初始化插件（异步）
-        Bukkit.getScheduler().runTaskAsynchronously(this, this::initializePlugin);
-    }
-    
-    /**
-     * 🔧 检查并修复损坏的配置文件
-     */
-    private void checkAndRepairConfig() {
-        File configFile = new File(getDataFolder(), "config.yml");
-        
-        if (!configFile.exists()) {
-            getLogger().info("配置文件不存在，将创建默认配置");
-            saveDefaultConfig();
-            return;
-        }
-        
-        // 尝试加载配置文件以检测YAML语法错误
-        try {
-            YamlConfiguration testConfig = YamlConfiguration.loadConfiguration(configFile);
-            
-            // 检查关键节点是否存在
-            if (!testConfig.contains("settings")) {
-                throw new Exception("缺少关键配置节点");
-            }
-            
-            getLogger().info("配置文件检查通过");
-            
-        } catch (Exception e) {
-            getLogger().severe("检测到配置文件损坏，正在进行紧急修复...");
-            getLogger().severe("错误详情: " + e.getMessage());
-            
-            try {
-                repairCorruptedConfig(configFile);
-                getLogger().info("配置文件修复完成");
-            } catch (Exception repairError) {
-                getLogger().severe("配置文件修复失败: " + repairError.getMessage());
-                getLogger().severe("将使用默认配置");
-                
-                // 最后的备用方案
-                try {
-                    configFile.delete();
-                    saveDefaultConfig();
-                } catch (Exception fallbackError) {
-                    getLogger().severe("创建默认配置也失败了: " + fallbackError.getMessage());
-                }
-            }
-        }
-    }
-    
-    /**
-     * 🔧 修复损坏的配置文件
-     */
-    private void repairCorruptedConfig(File configFile) throws Exception {
-        getLogger().info("开始修复损坏的配置文件...");
-        
-        // 1. 备份损坏的文件
-        File backupFile = new File(configFile.getParent(), 
-            "config.yml.corrupted." + System.currentTimeMillis());
-        java.nio.file.Files.copy(configFile.toPath(), backupFile.toPath());
-        getLogger().info("已备份损坏的配置文件: " + backupFile.getName());
-        
-        // 2. 尝试提取API密钥
-        String apiKey = extractApiKeyFromCorruptedFile(configFile);
-        
-        // 3. 删除损坏的文件并创建新的默认配置
-        configFile.delete();
-        saveDefaultConfig();
-        getLogger().info("已重新创建默认配置文件");
-        
-        // 4. 如果提取到了API密钥，写入新配置
-        if (apiKey != null && !apiKey.isEmpty() && !apiKey.equals("your-deepseek-api-key")) {
-            try {
-                YamlConfiguration newConfig = YamlConfiguration.loadConfiguration(configFile);
-                newConfig.set("settings.api-key", apiKey);
-                newConfig.save(configFile);
-                
-                // 修复API密钥格式
-                fixApiKeyFormat(configFile, apiKey);
-                
-                getLogger().info("已恢复用户的API密钥: " + maskApiKey(apiKey));
-            } catch (Exception e) {
-                getLogger().warning("恢复API密钥时出错: " + e.getMessage());
-            }
-        }
-        
-        getLogger().info("配置文件修复完成");
-    }
-    
-    /**
-     * 🔧 从损坏的配置文件中提取API密钥
-     */
-    private String extractApiKeyFromCorruptedFile(File configFile) {
-        try {
-            List<String> lines = java.nio.file.Files.readAllLines(configFile.toPath(), 
-                                                                  java.nio.charset.StandardCharsets.UTF_8);
-            
-            for (String line : lines) {
-                String trimmed = line.trim();
-                if (trimmed.startsWith("api-key:")) {
-                    String value = trimmed.substring(8).trim();
-                    
-                    // 移除引号
-                    if (value.startsWith("\"") && value.endsWith("\"")) {
-                        value = value.substring(1, value.length() - 1);
-                    } else if (value.startsWith("'") && value.endsWith("'")) {
-                        value = value.substring(1, value.length() - 1);
-                    }
-                    
-                    // 验证API密钥
-                    if (value.length() > 10 && !value.equals("your-deepseek-api-key")) {
-                        getLogger().info("从损坏配置中提取到API密钥");
-                        return value;
-                    }
-                }
-            }
-            
-            getLogger().info("未在损坏配置中找到有效的API密钥");
-            return null;
-            
-        } catch (Exception e) {
-            getLogger().warning("提取API密钥时出错: " + e.getMessage());
-            return null;
-        }
-    }
-    
-    /**
-     * 🔧 修复API密钥格式
-     */
-    private void fixApiKeyFormat(File configFile, String apiKey) {
-        try {
-            List<String> lines = java.nio.file.Files.readAllLines(configFile.toPath(), 
-                                                                  java.nio.charset.StandardCharsets.UTF_8);
-            
-            for (int i = 0; i < lines.size(); i++) {
-                String line = lines.get(i);
-                if (line.trim().startsWith("api-key:")) {
-                    String indent = line.substring(0, line.indexOf("api-key:"));
-                    String newLine = indent + "api-key: \"" + apiKey + "\"";
-                    lines.set(i, newLine);
-                    
-                    java.nio.file.Files.write(configFile.toPath(), lines, 
-                                             java.nio.charset.StandardCharsets.UTF_8);
-                    getLogger().info("已修复API密钥的YAML格式");
-                    break;
-                }
-            }
-        } catch (Exception e) {
-            getLogger().warning("修复API密钥格式时出错: " + e.getMessage());
-        }
-    }
-    
-    /**
-     * 🔧 掩码API密钥用于日志显示
-     */
-    private String maskApiKey(String apiKey) {
-        if (apiKey == null || apiKey.length() < 8) {
-            return "****";
-        }
-        return apiKey.substring(0, 4) + "****" + apiKey.substring(apiKey.length() - 4);
+        isShuttingDown.set(false);
+        // Bukkit components and their constructors must initialize on the server thread.
+        initializePlugin();
     }
     
     /**
@@ -294,15 +135,13 @@ public class AIChatPlugin extends JavaPlugin {
             debug("诊断管理器已初始化");
             
             // 在主线程中注册监听器和命令
-            Bukkit.getScheduler().runTask(this, this::registerListenersAndCommands);
+            registerListenersAndCommands();
             
             getLogger().info("AI Chat Plugin 初始化完成!");
             
         } catch (Exception e) {
             getLogger().log(Level.SEVERE, "插件初始化失败", e);
-            Bukkit.getScheduler().runTask(this, () -> {
-                Bukkit.getPluginManager().disablePlugin(this);
-            });
+            Bukkit.getPluginManager().disablePlugin(this);
         }
     }
     
@@ -328,7 +167,7 @@ public class AIChatPlugin extends JavaPlugin {
             getLogger().info("AI Chat Plugin 启动完成! 所有功能已就绪。");
             
         } catch (Exception e) {
-            getLogger().log(Level.SEVERE, "注册监听器和命令失败", e);
+            throw new IllegalStateException("注册监听器和命令失败", e);
         }
     }
     
@@ -367,7 +206,7 @@ public class AIChatPlugin extends JavaPlugin {
             debug("所有命令已注册");
             
         } catch (Exception e) {
-            getLogger().log(Level.WARNING, "命令注册失败", e);
+            throw new IllegalStateException("命令注册失败", e);
         }
     }
     
@@ -421,6 +260,9 @@ public class AIChatPlugin extends JavaPlugin {
     @Override
     public void onDisable() {
         isShuttingDown.set(true);
+        Bukkit.getScheduler().cancelTasks(this);
+        if (webServer != null) webServer.stop();
+        if (aiService != null) aiService.shutdown();
         getLogger().info("正在关闭 AI Chat Plugin...");
         
         try {
@@ -474,10 +316,7 @@ public class AIChatPlugin extends JavaPlugin {
         CompletableFuture<Void> saveFuture = CompletableFuture.allOf(
             // 保存对话历史
             CompletableFuture.runAsync(() -> {
-                if (conversationManager != null) {
-                    conversationManager.forceSaveAll();
-                    debug("对话历史已保存");
-                }
+                // ConversationManager flushes after its workers have stopped.
             }),
             
             // 保存玩家档案
@@ -504,6 +343,8 @@ public class AIChatPlugin extends JavaPlugin {
         if (conversationManager != null) {
             conversationManager.shutdown();
         }
+        if (environmentCollector != null) environmentCollector.shutdown();
+        if (configLoader != null) configLoader.stopHotReload();
         
         if (aiService != null) {
             aiService.shutdown();
@@ -533,7 +374,6 @@ public class AIChatPlugin extends JavaPlugin {
      */
     public void reloadPluginConfig() {
         try {
-            reloadConfig();
             if (configLoader != null) {
                 configLoader.reloadConfig();
             }
@@ -682,4 +522,4 @@ public class AIChatPlugin extends JavaPlugin {
         
         return status.toString();
     }
-} 
+}
