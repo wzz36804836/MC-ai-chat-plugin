@@ -1,5 +1,7 @@
 # AI Chat Plugin
 
+> 本地维护预览版：1.3.0-SNAPSHOT，目标 Paper 1.21.11 / Java 21。原 README 以下内容为上游历史说明，不代表本分支已验证的功能或安装方式。请先阅读 [接手评估、迁移说明及验证边界](MAINTENANCE.md)。不支持 Folia；安装更新请完整重启，不要使用下文旧版的热重载步骤。
+
 [![Version](https://img.shields.io/badge/version-v1.2.0-blue.svg)](https://github.com/zsbooody/ai-chat-plugin/releases)
 [![Minecraft](https://img.shields.io/badge/minecraft-1.19+-green.svg)](https://www.minecraft.net/)
 [![License](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
@@ -261,4 +263,4 @@ ai-chat-plugin/
 
 Made with ❤️ by AI Chat Plugin Team
 
-</div> 
+</div>
