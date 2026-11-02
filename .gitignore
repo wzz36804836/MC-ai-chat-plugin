@@ -147,4 +147,6 @@ local.properties
 # Scala IDE specific (Scala & Java IDE for Eclipse)
 .cache-main
 .scala_dependencies
-.worksheet 
+.worksheet
+# Local build tools
+work/
