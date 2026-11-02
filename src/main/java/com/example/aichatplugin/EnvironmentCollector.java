@@ -87,7 +87,7 @@ public class EnvironmentCollector {
         PlayerLocationKey(UUID playerId, Location location) {
             this.playerId = playerId;
             this.location = location.clone();
-            this.directionSegment = (int)(location.getYaw() / 45.0) % DIRECTION_SEGMENTS;
+            this.directionSegment = Math.floorMod((int)Math.floor(location.getYaw() / 45.0), DIRECTION_SEGMENTS);
         }
         
         @Override
@@ -95,7 +95,7 @@ public class EnvironmentCollector {
             if (this == o) return true;
             if (!(o instanceof PlayerLocationKey)) return false;
             PlayerLocationKey that = (PlayerLocationKey) o;
-            return playerId.equals(that.playerId) && 
+            return playerId.equals(that.playerId) && Objects.equals(location.getWorld(), that.location.getWorld()) &&
                    location.getBlockX() == that.location.getBlockX() &&
                    location.getBlockY() == that.location.getBlockY() &&
                    location.getBlockZ() == that.location.getBlockZ() &&
@@ -104,7 +104,7 @@ public class EnvironmentCollector {
         
         @Override
         public int hashCode() {
-            return Objects.hash(playerId, 
+            return Objects.hash(playerId, location.getWorld(),
                 location.getBlockX(), 
                 location.getBlockY(), 
                 location.getBlockZ(),
@@ -194,44 +194,37 @@ public class EnvironmentCollector {
      */
     public CompletableFuture<String> collectEnvironmentInfo(Player player) {
         CompletableFuture<String> future = new CompletableFuture<>();
-        Location loc = player.getLocation();
-        PlayerLocationKey key = new PlayerLocationKey(player.getUniqueId(), loc);
-
-        // 使用缓存数据
-        if (cache.containsKey(key)) {
-            CachedEnvironment cached = cache.get(key);
-            if (System.currentTimeMillis() - cached.timestamp < config.getEnvironmentCacheTTL()) {
-                plugin.debug("使用缓存的环境信息: " + player.getName());
-                future.complete(cached.data);
-                return future;
-            }
-        }
-        
-        long startTime = System.currentTimeMillis();
-        
-        // 🔧 关键修复：完全异步化，避免主线程阻塞
-        CompletableFuture<String> asyncTask = CompletableFuture.supplyAsync(() -> {
+        Runnable collect = () -> {
             try {
-                return collectEnvironmentDataAsync(player, loc, startTime);
+                if (plugin.isShuttingDown() || !player.isOnline()) {
+                    future.complete("");
+                    return;
+                }
+                Location loc = player.getLocation();
+                PlayerLocationKey key = new PlayerLocationKey(player.getUniqueId(), loc);
+                CachedEnvironment cached = cache.get(key);
+                if (cached != null && System.currentTimeMillis() - cached.timestamp < config.getEnvironmentCacheTTL()) {
+                    future.complete(cached.data);
+                    return;
+                }
+                // Bounded nearby scan; Bukkit world/entity reads belong on the server thread.
+                String result = collectEnvironmentData(player, loc, System.currentTimeMillis());
+                cache.put(key, new CachedEnvironment(result));
+                future.complete(result);
             } catch (Exception e) {
-                plugin.getLogger().log(Level.WARNING, "收集环境信息时发生错误", e);
-                return "环境信息收集失败";
+                future.completeExceptionally(e);
             }
-        }, executor);
-        
-        asyncTask.thenAccept(result -> {
-            // 异步更新缓存
-            cache.put(key, new CachedEnvironment(result));
-            future.complete(result);
-        });
-        
+        };
+        if (Bukkit.isPrimaryThread()) collect.run();
+        else if (plugin.isEnabled() && !plugin.isShuttingDown()) Bukkit.getScheduler().runTask(plugin, collect);
+        else future.complete("");
         return future;
     }
     
     /**
      * 🔧 异步收集环境数据（不阻塞主线程）
      */
-    private String collectEnvironmentDataAsync(Player player, Location loc, long startTime) {
+    private String collectEnvironmentData(Player player, Location loc, long startTime) {
         World world = player.getWorld();
         StringBuilder info = new StringBuilder();
         
@@ -684,27 +677,7 @@ public class EnvironmentCollector {
      * @param callback 完成回调
      */
     public void collectEnvironmentAsync(Player player, Consumer<String> callback) {
-        UUID playerId = player.getUniqueId();
-        
-        // 取消之前的扫描
-        CompletableFuture<String> previousScan = pendingScans.remove(playerId);
-        if (previousScan != null) {
-            previousScan.cancel(true);
-        }
-        
-        // 创建新的扫描任务
-        CompletableFuture<String> scanFuture = CompletableFuture.supplyAsync(() -> {
-            try {
-                return collectEnvironment(player);
-            } catch (Exception e) {
-                plugin.getLogger().warning("环境收集失败: " + e.getMessage());
-                return "环境信息收集失败";
-            }
-        }, executor);
-        
-        // 存储并设置回调
-        pendingScans.put(playerId, scanFuture);
-        scanFuture.thenAccept(callback);
+        collectEnvironmentInfo(player).thenAccept(callback);
     }
     
     /**
@@ -871,4 +844,4 @@ public class EnvironmentCollector {
             }
         }, 60, 60, TimeUnit.SECONDS); // 每分钟清理一次
     }
-} 
+}
