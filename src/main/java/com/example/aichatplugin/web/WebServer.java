@@ -2,7 +2,6 @@ package com.example.aichatplugin.web;
 
 import com.example.aichatplugin.AIChatPlugin;
 import com.example.aichatplugin.web.controllers.*;
-import com.example.aichatplugin.web.websocket.ConfigWebSocketHandler;
 import org.eclipse.jetty.server.Server;
 import org.eclipse.jetty.server.ServerConnector;
 import org.eclipse.jetty.server.handler.HandlerList;
@@ -10,7 +9,6 @@ import org.eclipse.jetty.server.handler.ResourceHandler;
 import org.eclipse.jetty.servlet.ServletContextHandler;
 import org.eclipse.jetty.servlet.ServletHolder;
 import org.eclipse.jetty.servlet.DefaultServlet;
-import org.eclipse.jetty.websocket.server.config.JettyWebSocketServletContainerInitializer;
 import org.eclipse.jetty.util.resource.Resource;
 import org.eclipse.jetty.server.Handler;
 
@@ -21,6 +19,10 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.BindException;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.security.MessageDigest;
+import com.google.gson.JsonParser;
 import java.net.URL;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
@@ -86,7 +88,7 @@ public class WebServer {
      * 验证请求令牌
      */
     public boolean validateToken(String token) {
-        return accessToken != null && accessToken.equals(token);
+        return accessToken != null && token != null && MessageDigest.isEqual(accessToken.getBytes(StandardCharsets.UTF_8), token.getBytes(StandardCharsets.UTF_8));
     }
     
     /**
@@ -113,7 +115,13 @@ public class WebServer {
         
         try {
             // 创建Jetty服务器
-            server = new Server(port);
+            org.eclipse.jetty.util.thread.QueuedThreadPool threads = new org.eclipse.jetty.util.thread.QueuedThreadPool(16, 2);
+            threads.setName("AIChat-Web");
+            server = new Server(threads);
+            ServerConnector connector = new ServerConnector(server);
+            connector.setHost(plugin.getConfigLoader().getString("web.host", "127.0.0.1"));
+            connector.setPort(port);
+            server.addConnector(connector);
             
             // 创建上下文处理器
             ServletContextHandler context = new ServletContextHandler(ServletContextHandler.SESSIONS);
@@ -133,7 +141,7 @@ public class WebServer {
             context.addServlet(staticHolder, "/");
             
             // 配置WebSocket
-            configureWebSocket(context);
+            // The upstream WebSocket handler is a placeholder, so do not expose it.
             
             // 添加认证Servlet
             context.addServlet(new ServletHolder(new AuthServlet()), "/api/auth/*");
@@ -167,7 +175,7 @@ public class WebServer {
      * 停止Web服务器
      */
     public void stop() {
-        if (!isRunning.get() || server == null) {
+        if (server == null) {
             return;
         }
         
@@ -211,32 +219,15 @@ public class WebServer {
      */
     private boolean isPortAvailable(int port) {
         try {
-            Server testServer = new Server(port);
-            testServer.start();
-            testServer.stop();
-            return true;
+            try (ServerSocket socket = new ServerSocket()) {
+                socket.bind(new InetSocketAddress(plugin.getConfigLoader().getString("web.host", "127.0.0.1"), port));
+                return true;
+            }
         } catch (BindException e) {
             return false;
         } catch (Exception e) {
             return false;
         }
-    }
-    
-    /**
-     * 配置WebSocket
-     */
-    private void configureWebSocket(ServletContextHandler context) {
-        // 配置WebSocket容器
-        JettyWebSocketServletContainerInitializer.configure(context, (servletContext, wsContainer) -> {
-            wsContainer.setMaxTextMessageSize(65536);
-            wsContainer.setMaxBinaryMessageSize(65536);
-            wsContainer.setIdleTimeout(java.time.Duration.ofMinutes(10));
-            
-            // 添加WebSocket端点
-            wsContainer.addMapping("/ws/config", ConfigWebSocketHandler.class);
-        });
-        
-        plugin.debug("WebSocket已配置");
     }
     
     /**
@@ -255,8 +246,13 @@ public class WebServer {
             
             if ("/login".equals(pathInfo)) {
                 // 处理登录请求
-                String body = new String(request.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-                if (body.contains(accessToken)) {
+                byte[] bytes = request.getInputStream().readNBytes(4097);
+                if (bytes.length > 4096) { response.sendError(413); return; }
+                String token;
+                try {
+                    token = JsonParser.parseString(new String(bytes, StandardCharsets.UTF_8)).getAsJsonObject().get("token").getAsString();
+                } catch (RuntimeException e) { response.sendError(400); return; }
+                if (validateToken(token)) {
                     response.getWriter().write("{\"success\": true, \"token\": \"" + accessToken + "\"}");
                 } else {
                     response.setStatus(401);
@@ -382,4 +378,4 @@ public class WebServer {
         }
         return null;
     }
-} 
+}
