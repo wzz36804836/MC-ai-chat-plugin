@@ -50,16 +50,12 @@ public class ApiServlet extends HttpServlet {
     private boolean validateRequest(HttpServletRequest request, HttpServletResponse response) 
             throws IOException {
         
-        // 获取请求路径
-        String pathInfo = request.getPathInfo();
-        
-        // 登录和状态查询端点是公开的
-        if (pathInfo != null && (pathInfo.startsWith("/status") || pathInfo.startsWith("/auth/"))) {
-            return true;
-        }
-        
         // 检查是否启用了令牌验证
-        if (plugin.getWebServer() != null && plugin.getWebServer().isTokenRequired()) {
+        if (plugin.getWebServer() == null) {
+            sendUnauthorizedResponse(response, "管理后台尚未就绪");
+            return false;
+        }
+        if (plugin.getWebServer().isTokenRequired()) {
             String authHeader = request.getHeader("Authorization");
             
             if (authHeader == null || !authHeader.startsWith("Bearer ")) {
@@ -215,4 +211,4 @@ public class ApiServlet extends HttpServlet {
         
         sendJsonResponse(response, error);
     }
-} 
+}
