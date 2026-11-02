@@ -157,7 +157,8 @@ public class DeepSeekAIService {
         
         // 配置OkHttpClient
         OkHttpClient.Builder builder = new OkHttpClient.Builder()
-            .connectTimeout(30, TimeUnit.SECONDS)
+            .callTimeout(45, TimeUnit.SECONDS)
+            .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             .connectionPool(new ConnectionPool(50, 10, TimeUnit.MINUTES));
@@ -212,7 +213,10 @@ public class DeepSeekAIService {
      * 生成AI响应
      */
     public String generateResponse(String prompt, Player player) {
-        return internalGenerate(prompt, player, true);
+        if (org.bukkit.Bukkit.isPrimaryThread()) throw new IllegalStateException("AI HTTP requests must run off the server thread");
+        if (configLoader.isMockApiEnabled()) return getMockResponse(prompt);
+        // A conversational answer depends on history, model and system prompt; do not reuse prompt-only cache entries.
+        return internalGenerate(prompt, player, false);
     }
 
     /**
@@ -331,17 +335,18 @@ public class DeepSeekAIService {
         try (Response response = client.newCall(request).execute()) {
             if (!response.isSuccessful()) {
                 int code = response.code();
-                String errorBody = response.body() != null ? response.body().string() : "未知错误";
+                // Do not include provider response bodies in logs: they may echo sensitive input.
                 
                 if (code == 429) {
                     throw new RateLimitExceededException("API调用超限");
                 } else if (code >= 500) {
-                    throw new ServerException("API服务异常: " + errorBody);
+                    throw new ServerException("API服务异常: HTTP " + code);
                 } else {
-                    throw new ClientException("请求错误: " + code + " - " + errorBody);
+                    throw new ClientException("请求错误: HTTP " + code);
                 }
             }
             
+            if (response.body() == null) throw new IOException("API响应为空");
             return parseResponse(response.body().string());
         }
     }
