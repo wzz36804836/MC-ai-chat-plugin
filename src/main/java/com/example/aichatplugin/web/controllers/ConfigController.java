@@ -454,7 +454,7 @@ public class ConfigController extends HttpServlet {
         
         // 读取请求体
         String body = request.getReader().lines().collect(Collectors.joining(System.lineSeparator()));
-        plugin.debug("[WebConfig] 收到配置保存请求: " + body);
+        plugin.debug("[WebConfig] 收到配置保存请求");
         
         try {
             JsonElement jsonElement = JsonParser.parseString(body);
@@ -475,7 +475,7 @@ public class ConfigController extends HttpServlet {
                 try {
                     if (updateConfigValue(key, value)) {
                         updatedCount++;
-                        plugin.debug("[WebConfig] 配置项更新成功: " + key + " = " + value);
+                        plugin.debug("[WebConfig] 配置项更新成功: " + key);
                         } else {
                             plugin.getLogger().warning("[WebConfig] 配置项未处理: " + key);
                     }
@@ -499,7 +499,7 @@ public class ConfigController extends HttpServlet {
                             try {
                                 if (updateConfigValue(key, value)) {
                                     updatedCount++;
-                                    plugin.debug("[WebConfig] 配置项更新成功: " + key + " = " + value);
+                                    plugin.debug("[WebConfig] 配置项更新成功: " + key);
                                 } else {
                                     plugin.getLogger().warning("[WebConfig] 配置项未处理: " + key);
                                 }
@@ -753,4 +753,4 @@ public class ConfigController extends HttpServlet {
         writer.print(gson.toJson(error));
         writer.flush();
     }
-} 
+}
