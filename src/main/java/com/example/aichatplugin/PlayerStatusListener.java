@@ -30,7 +30,7 @@ import org.bukkit.potion.PotionEffectType;
 import org.bukkit.projectiles.BlockProjectileSource;
 import org.bukkit.projectiles.ProjectileSource;
 import org.bukkit.advancement.Advancement;
-import org.bukkit.advancement.AdvancementDisplay;
+import io.papermc.paper.advancement.AdvancementDisplay;
 import org.bukkit.block.Block;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
@@ -318,8 +318,8 @@ public class PlayerStatusListener implements Listener {
         statusService.recordEventProcessed("level_up");
         if (event.getNewLevel() <= event.getOldLevel()) return;
         
-        AttributeInstance healthAttr = player.getAttribute(Attribute.GENERIC_MAX_HEALTH);
-        AttributeInstance attackAttr = player.getAttribute(Attribute.GENERIC_ATTACK_DAMAGE);
+        AttributeInstance healthAttr = player.getAttribute(Attribute.MAX_HEALTH);
+        AttributeInstance attackAttr = player.getAttribute(Attribute.ATTACK_DAMAGE);
         
         double health = healthAttr != null ? healthAttr.getValue() : 20.0;
         double attack = attackAttr != null ? attackAttr.getValue() : 1.0;
@@ -357,7 +357,7 @@ public class PlayerStatusListener implements Listener {
         try {
             AdvancementDisplay display = advancement.getDisplay();
             if (display != null) {
-                String title = display.getTitle();
+                String title = PlainTextComponentSerializer.plainText().serialize(display.title());
                 if (title != null) {
                     message = title;
                 }
@@ -373,7 +373,7 @@ public class PlayerStatusListener implements Listener {
         String key = advancement.getKey().getKey();
         String namespace = advancement.getKey().getNamespace();
         
-        return IMPORTANT_ADVANCEMENTS.contains(namespace) &&
+        return IMPORTANT_ADVANCEMENTS.contains(namespace + ":" + key) &&
                !key.startsWith("recipe/") && 
                !key.equals("root");
     }
@@ -654,16 +654,16 @@ public class PlayerStatusListener implements Listener {
     private Map<PotionEffectType, String> initPotionNameMap() {
         Map<PotionEffectType, String> map = new HashMap<>();
         map.put(PotionEffectType.SPEED, "速度");
-        map.put(PotionEffectType.SLOW, "缓慢");
-        map.put(PotionEffectType.FAST_DIGGING, "急迫");
-        map.put(PotionEffectType.SLOW_DIGGING, "挖掘疲劳");
-        map.put(PotionEffectType.INCREASE_DAMAGE, "力量");
-        map.put(PotionEffectType.HEAL, "瞬间治疗");
-        map.put(PotionEffectType.HARM, "瞬间伤害");
-        map.put(PotionEffectType.JUMP, "跳跃提升");
-        map.put(PotionEffectType.CONFUSION, "反胃");
+        map.put(PotionEffectType.SLOWNESS, "缓慢");
+        map.put(PotionEffectType.HASTE, "急迫");
+        map.put(PotionEffectType.MINING_FATIGUE, "挖掘疲劳");
+        map.put(PotionEffectType.STRENGTH, "力量");
+        map.put(PotionEffectType.INSTANT_HEALTH, "瞬间治疗");
+        map.put(PotionEffectType.INSTANT_DAMAGE, "瞬间伤害");
+        map.put(PotionEffectType.JUMP_BOOST, "跳跃提升");
+        map.put(PotionEffectType.NAUSEA, "反胃");
         map.put(PotionEffectType.REGENERATION, "生命恢复");
-        map.put(PotionEffectType.DAMAGE_RESISTANCE, "抗性提升");
+        map.put(PotionEffectType.RESISTANCE, "抗性提升");
         map.put(PotionEffectType.FIRE_RESISTANCE, "防火");
         map.put(PotionEffectType.WATER_BREATHING, "水下呼吸");
         map.put(PotionEffectType.INVISIBILITY, "隐身");
