@@ -350,8 +350,7 @@ public class PerformanceMonitor {
     public double getCurrentTPS() {
         try {
             // 反射获取TPS（改进版本）
-            Object serverInstance = Bukkit.getServer().getClass().getMethod("getServer").invoke(Bukkit.getServer());
-            double[] tps = (double[]) serverInstance.getClass().getField("recentTps").get(serverInstance);
+            double[] tps = Bukkit.getTPS();
             double currentTps = tps[0];
             
             // 验证TPS值的合理性
@@ -1081,4 +1080,4 @@ public class PerformanceMonitor {
     public long getManualModeSetTime() {
         return manualModeSetTime;
     }
-} 
+}
