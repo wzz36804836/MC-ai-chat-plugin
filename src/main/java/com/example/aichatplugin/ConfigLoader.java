@@ -179,80 +179,24 @@ public class ConfigLoader {
      * 加载配置
      */
     private void loadConfig() {
-        try {
-            if (!configFile.exists()) {
-                plugin.saveDefaultConfig();
-            }
-            
-            // 🔧 尝试加载配置，如果失败则进行紧急修复
+        synchronized (configLock) {
+            if (!configFile.exists()) plugin.saveDefaultConfig();
             try {
-                config = YamlConfiguration.loadConfiguration(configFile);
+                YamlConfiguration candidate = new YamlConfiguration();
+                candidate.load(configFile);
+                if (!candidate.isConfigurationSection("settings")) {
+                    throw new IllegalArgumentException("缺少 settings 配置节");
+                }
+                // Publish only after successful parsing. Never overwrite an invalid user file.
+                config = candidate;
                 lastModified = configFile.lastModified();
+                invalidateCache();
+                updateCache();
             } catch (Exception e) {
-                plugin.getLogger().severe("配置文件YAML语法错误，正在进行紧急修复...");
-                plugin.getLogger().severe("错误详情: " + e.getMessage());
-                
-                // 🔧 紧急修复：重建配置文件
-                emergencyConfigRepair();
-                
-                // 重新尝试加载
-                config = YamlConfiguration.loadConfiguration(configFile);
-                lastModified = configFile.lastModified();
-                plugin.getLogger().info("配置文件已紧急修复并重新加载");
-            }
-            
-            invalidateCache();
-            updateCache();
-            
-        } catch (Exception e) {
-            plugin.getLogger().log(Level.SEVERE, "加载配置文件时发生严重错误", e);
-            
-            // 最后的备用方案：使用默认配置
-            config = new YamlConfiguration();
-            plugin.getLogger().warning("使用默认配置运行插件");
-        }
-    }
-    
-    /**
-     * 🔧 紧急配置修复：当YAML语法损坏时重建配置文件
-     */
-    private void emergencyConfigRepair() throws IOException {
-        plugin.getLogger().info("开始紧急配置修复...");
-        
-        // 1. 备份损坏的配置文件
-        File corruptedBackup = new File(configFile.getParent(), 
-            "config.yml.corrupted." + System.currentTimeMillis());
-        if (configFile.exists()) {
-            java.nio.file.Files.copy(configFile.toPath(), corruptedBackup.toPath());
-            plugin.getLogger().info("已备份损坏的配置文件: " + corruptedBackup.getName());
-        }
-        
-        // 2. 尝试提取用户的API密钥（如果存在且可读取）
-        String userApiKey = extractApiKeyFromCorruptedConfig();
-        
-        // 3. 重新创建默认配置文件
-        configFile.delete();
-        plugin.saveDefaultConfig();
-        plugin.getLogger().info("已重新创建默认配置文件");
-        
-        // 4. 如果成功提取了API密钥，立即写入新配置
-        if (userApiKey != null && !userApiKey.isEmpty() && !userApiKey.equals("your-deepseek-api-key")) {
-            try {
-                // 加载新的默认配置
-                YamlConfiguration newConfig = YamlConfiguration.loadConfiguration(configFile);
-                newConfig.set("settings.api-key", userApiKey);
-                newConfig.save(configFile);
-                
-                // 强制修复API密钥格式
-                forceFixApiKeyInYaml(userApiKey);
-                
-                plugin.getLogger().info("已恢复用户的API密钥: " + maskApiKeyForLog(userApiKey));
-            } catch (Exception e) {
-                plugin.getLogger().warning("恢复API密钥时出错: " + e.getMessage());
+                if (config == null) throw new IllegalStateException("config.yml 无效；原文件已保留，请修正后重启", e);
+                throw new IllegalArgumentException("config.yml 无效；继续使用上次有效配置，原文件已保留", e);
             }
         }
-        
-        plugin.getLogger().info("紧急配置修复完成");
     }
     
     /**
@@ -333,20 +277,10 @@ public class ConfigLoader {
                 // 🔧 增强的安全保存机制
                 saveConfigSafely();
                 
-                // 🔧 保存后立即检查并修复API密钥格式
-                String currentApiKey = config.getString("settings.api-key", "");
-                if (!currentApiKey.isEmpty()) {
-                    try {
-                        forceFixApiKeyInYaml(currentApiKey);
-                    } catch (Exception e) {
-                        plugin.getLogger().warning("保存后修复API密钥格式失败: " + e.getMessage());
-                    }
-                }
             } catch (IOException e) {
                 plugin.getLogger().log(Level.SEVERE, "保存配置文件时发生错误", e);
                 
-                // 🔧 尝试恢复备份
-                tryRestoreFromBackup();
+                throw new IllegalStateException("配置保存失败；原文件已保留", e);
             }
         }
     }
@@ -588,9 +522,8 @@ public class ConfigLoader {
      */
     public void reloadConfig() {
         synchronized(configLock) {
+            loadConfig();
             plugin.reloadConfig();
-            config = plugin.getConfig();
-            lastModified = configFile.lastModified();
             
             // 重新加载prompts
             loadPrompts();
@@ -878,81 +811,13 @@ public class ConfigLoader {
     
     // 配置修改
     public void setApiKey(String apiKey) {
-        synchronized(configLock) {
-            // 🔧 修复：确保API密钥被正确保存到YAML
-            if (apiKey != null && !apiKey.isEmpty()) {
-                // 先使用标准方式保存
-                config.set("settings.api-key", apiKey);
-                saveConfig();
-                
-                // 🔧 强制执行YAML格式修复，确保引号存在
-                try {
-                    forceFixApiKeyInYaml(apiKey);
-                    plugin.getLogger().info("API密钥已保存并确保正确的YAML格式");
-                } catch (Exception e) {
-                    plugin.getLogger().severe("强制修复API密钥YAML格式失败: " + e.getMessage());
-                    throw new RuntimeException("API密钥保存失败", e);
-                }
-                
-                // 重新加载配置以确保一致性
-                reloadConfig();
-            } else {
-                config.set("settings.api-key", "");
-                saveConfig();
-            }
-            
+        synchronized (configLock) {
+            String value = apiKey == null ? "" : apiKey.trim();
+            if (value.chars().anyMatch(Character::isISOControl)) throw new IllegalArgumentException("API key contains control characters");
+            config.set("settings.api-key", value);
+            saveConfig();
             invalidateCache();
-        }
-    }
-    
-    /**
-     * 🔧 强制修复config.yml中的API密钥格式（无条件执行）
-     */
-    private void forceFixApiKeyInYaml(String apiKey) throws IOException {
-        File configFile = new File(plugin.getDataFolder(), "config.yml");
-        if (!configFile.exists()) {
-            plugin.getLogger().warning("配置文件不存在，无法修复API密钥格式");
-            return;
-        }
-        
-        // 读取文件内容
-        List<String> lines = java.nio.file.Files.readAllLines(configFile.toPath(), 
-                                                              java.nio.charset.StandardCharsets.UTF_8);
-        
-        // 查找并修复API密钥行
-        boolean fixed = false;
-        for (int i = 0; i < lines.size(); i++) {
-            String line = lines.get(i);
-            
-            // 匹配 "api-key:" 行（支持不同的缩进）
-            if (line.trim().startsWith("api-key:")) {
-                String indent = line.substring(0, line.indexOf("api-key:"));
-                
-                // 检查当前格式
-                String currentValue = line.substring(line.indexOf("api-key:") + 8).trim();
-                
-                // 如果没有引号或格式不正确，强制修复
-                if (!currentValue.equals("\"" + apiKey + "\"")) {
-                    String newLine = indent + "api-key: \"" + apiKey + "\"";
-                    lines.set(i, newLine);
-                    fixed = true;
-                    plugin.getLogger().info("强制修复API密钥YAML格式: " + currentValue + " -> \"" + apiKey + "\"");
-                } else {
-                    plugin.getLogger().info("API密钥YAML格式已正确，无需修复");
-                }
-                break;
-            }
-        }
-        
-        if (fixed) {
-            // 创建备份
-            File backupFile = new File(plugin.getDataFolder(), "config.yml.backup." + System.currentTimeMillis());
-            java.nio.file.Files.copy(configFile.toPath(), backupFile.toPath());
-            
-            // 写回修复后的内容
-            java.nio.file.Files.write(configFile.toPath(), lines, 
-                                     java.nio.charset.StandardCharsets.UTF_8);
-            plugin.getLogger().info("API密钥YAML格式修复完成，备份已创建: " + backupFile.getName());
+            updateCache();
         }
     }
     
