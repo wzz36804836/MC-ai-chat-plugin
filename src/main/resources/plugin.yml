@@ -1,8 +1,8 @@
 name: AIChatPlugin
-version: 1.2.0
+version: 1.3.0-SNAPSHOT
 description: Minecraft AI聊天插件，支持DeepSeek AI智能对话和环境感知
 main: com.example.aichatplugin.AIChatPlugin
-api-version: 1.19
+api-version: '1.21.11'
 author: AI Chat Plugin Team
 website: https://github.com/zsbooody/ai-chat-plugin
 
