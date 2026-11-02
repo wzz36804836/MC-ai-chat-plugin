@@ -44,30 +44,11 @@ public class PlayerChatListener implements Listener {
         Player player = event.getPlayer();
         String message = event.getMessage();
         
-        // 异步验证
-        if (!messageProcessor.isValidMessage(message)) {
-            return;
-        }
-        
-        // 频率检查（线程安全）
-        if (!messageProcessor.isRateLimitExempt(player) && 
-            !messageProcessor.checkMessageRate(player.getUniqueId())) {
-            scheduleMessage(player, "§c消息发送过快，请稍后再试");
-            return;
-        }
-        
-        // 检查消息前缀
+        if (!messageProcessor.isValidMessage(message)) return;
         String prefix = plugin.getConfigLoader().getChatPrefix();
-        if (prefix == null || prefix.isEmpty() || message.startsWith(prefix)) {
-            // 如果前缀为空，直接处理消息；否则移除前缀
-            String content = prefix == null || prefix.isEmpty() ? 
-                message : message.substring(prefix.length()).trim();
-            
-            if (!content.isEmpty()) {
-                // 提交到主线程处理
-                scheduleProcessing(player, content);
-            }
-        }
+        if (prefix != null && !prefix.isEmpty() && !message.startsWith(prefix)) return;
+        String content = prefix == null || prefix.isEmpty() ? message : message.substring(prefix.length()).trim();
+        if (!content.isEmpty() && !plugin.isShuttingDown()) scheduleProcessing(player, content);
     }
     
     /**
@@ -84,6 +65,11 @@ public class PlayerChatListener implements Listener {
     private void scheduleProcessing(Player player, String rawMessage) {
         plugin.getServer().getScheduler().runTask(plugin, () -> {
             try {
+                if (!player.isOnline() || !player.hasPermission("aichat.use") || !plugin.getConfigLoader().isChatEnabled()) return;
+                if (!messageProcessor.isRateLimitExempt(player) && !messageProcessor.checkMessageRate(player.getUniqueId())) {
+                    player.sendMessage("§c消息发送过快，请稍后再试");
+                    return;
+                }
                 String content = messageProcessor.sanitizeMessage(rawMessage);
                 if (messageProcessor.tryAcquire(player)) {
                     conversationManager.processMessage(player, content, "chat");
