@@ -136,8 +136,8 @@ public class ConversationManager {
         this.processingStages = new ExecutorService[3];
         for (int i = 0; i < 3; i++) {
             final int stageIndex = i;
-            this.processingStages[i] = Executors.newFixedThreadPool(
-                getDynamicMaxTasks(),
+            this.processingStages[i] = new ThreadPoolExecutor(
+                2, 2, 0L, TimeUnit.MILLISECONDS, new ArrayBlockingQueue<>(32),
                 r -> {
                     Thread t = new Thread(r);
                     t.setName("ConversationManager-Stage" + stageIndex);
@@ -147,9 +147,7 @@ public class ConversationManager {
         }
         
         // 初始化executor
-        this.executor = Executors.newFixedThreadPool(
-            Runtime.getRuntime().availableProcessors()
-        );
+        this.executor = Executors.newSingleThreadExecutor();
         
         // 加载历史记录
         loadHistory();
@@ -302,7 +300,7 @@ public class ConversationManager {
     /**
      * 保存玩家历史记录
      */
-    private void savePlayerHistory(UUID playerId) throws Exception {
+    private synchronized void savePlayerHistory(UUID playerId) throws Exception {
         // 获取历史记录，如果不存在则跳过
         List<com.example.aichatplugin.Message> historyList = conversationHistory.get(playerId);
         if (historyList == null || historyList.isEmpty()) {
@@ -603,17 +601,14 @@ public class ConversationManager {
      * 处理消息
      */
     public void processMessage(Player player, String message, String type, String... args) {
-        plugin.debug("收到消息 - 玩家: " + player.getName() + ", 类型: " + type + ", 内容: " + message);
-        
-        if (isOnCooldown(player.getUniqueId())) {
-            plugin.debug("玩家 " + player.getName() + " 在冷却中");
+        if (plugin.isShuttingDown()) return;
+        if (!Bukkit.isPrimaryThread()) {
+            Bukkit.getScheduler().runTask(plugin, () -> processMessage(player, message, type, args));
             return;
         }
-        
-        // 提交到接收阶段
-        processingStages[STAGE_RECEIVE].submit(() -> 
-            stage1Preprocess(player, message, type, args)
-        );
+        if (!player.isOnline() || !config.isChatEnabled() || !player.hasPermission("aichat.use")) return;
+        if (isOnCooldown(player.getUniqueId())) return;
+        stage1Preprocess(player, message, type, args);
     }
     
     /**
@@ -630,9 +625,7 @@ public class ConversationManager {
             plugin.debug("预处理完成 - 玩家: " + player.getName() + ", 消息: " + currentMessage);
             
             // 提交到处理阶段
-            processingStages[STAGE_PROCESS].submit(() -> 
-                stage2Process(player, playerId, profile, history, currentMessage, sender)
-            );
+            stage2Process(player, playerId, profile, history, currentMessage, sender);
         } catch (Exception e) {
             plugin.getLogger().log(Level.WARNING, "预处理消息时发生错误", e);
         }
@@ -709,6 +702,16 @@ public class ConversationManager {
      */
     private void stage3GenerateResponse(String prompt, UUID playerId, String sender, 
                                       String currentMessage, Player player) {
+        if (plugin.isShuttingDown()) return;
+        try {
+            processingStages[STAGE_PROCESS].submit(() -> generateAndQueueResponse(prompt, playerId, sender, currentMessage, player));
+        } catch (RejectedExecutionException e) {
+            plugin.debug("AI request queue is full or stopping");
+        }
+    }
+
+    private void generateAndQueueResponse(String prompt, UUID playerId, String sender,
+                                      String currentMessage, Player player) {
         try {
             String response = generateResponseWithRetry(prompt, player);
             plugin.debug("生成响应 - 玩家: " + player.getName() + ", 响应: " + response);
@@ -718,11 +721,14 @@ public class ConversationManager {
                 final String finalResponse = cleanResponse(response);
                 
                 // 提交到输出阶段
+                if (plugin.isShuttingDown()) return;
                 processingStages[STAGE_OUTPUT].submit(() -> {
                     try {
                         addMessage(playerId, sender, currentMessage, false);
                         addMessage(playerId, "AI", finalResponse, true);
-                        responseQueue.offer(new ResponseTask(finalResponse));
+                        lastResponseTime.put(playerId, System.currentTimeMillis());
+                        lastResponse.put(playerId, finalResponse);
+                        responseQueue.offer(new ResponseTask(playerId, finalResponse));
                         plugin.debug("响应已加入队列 - 玩家: " + player.getName());
                     } catch (IllegalStateException e) {
                         // 🔧 改进：队列状态异常
@@ -1003,64 +1009,14 @@ public class ConversationManager {
      * 带重试的响应生成
      */
     private String generateResponseWithRetry(String prompt, Player player) {
-        int retries = 0;
-        Exception lastException = null;
-        
-        while (retries < MAX_RETRIES) {
-            try {
-                String response = aiService.generateResponse(prompt, player);
-                if (response != null && !response.trim().isEmpty()) {
-                    plugin.debug("AI响应生成成功 - 玩家: " + player.getName() + ", 重试次数: " + retries);
-                    return response;
-                } else {
-                    plugin.getLogger().warning("AI服务返回空响应 - 玩家: " + player.getName() + ", 重试: " + retries);
-                    lastException = new RuntimeException("AI服务返回空响应");
-                }
-            } catch (Exception e) {
-                lastException = e;
-                plugin.getLogger().warning("AI响应生成异常 - 玩家: " + player.getName() + 
-                    ", 重试: " + retries + "/" + MAX_RETRIES + 
-                    ", 异常类型: " + e.getClass().getSimpleName() + 
-                    ", 错误信息: " + e.getMessage());
-                
-                // 如果是配置问题或API密钥问题，不需要重试
-                if (e.getMessage() != null && 
-                    (e.getMessage().contains("API密钥") || 
-                     e.getMessage().contains("401") || 
-                     e.getMessage().contains("Unauthorized"))) {
-                    plugin.getLogger().severe("API认证失败，停止重试 - 玩家: " + player.getName());
-                    break;
-                }
-            }
-            
-            retries++;
-            if (retries < MAX_RETRIES) {
-                try {
-                    Thread.sleep(RETRY_DELAY);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    plugin.getLogger().warning("重试等待被中断 - 玩家: " + player.getName());
-                    break;
-                }
-            }
+        // The HTTP service owns retries. Nested retries multiplied cost and shutdown time.
+        if (plugin.isShuttingDown() || Thread.currentThread().isInterrupted()) return null;
+        try {
+            return aiService.generateResponse(prompt, player);
+        } catch (Exception e) {
+            plugin.getLogger().warning("AI请求失败: " + e.getClass().getSimpleName());
+            return null;
         }
-        
-        // 记录最终失败的详细信息
-        if (lastException != null) {
-            plugin.getLogger().severe("AI响应生成最终失败 - 玩家: " + player.getName() + 
-                ", 总重试次数: " + retries + 
-                ", 最后异常: " + lastException.getClass().getSimpleName() + 
-                " - " + lastException.getMessage());
-            
-            // 如果是调试模式，打印完整堆栈
-            if (config.isDebugEnabled()) {
-                plugin.getLogger().log(Level.SEVERE, "AI响应生成详细错误堆栈:", lastException);
-            }
-        } else {
-            plugin.getLogger().severe("AI响应生成失败，原因未知 - 玩家: " + player.getName());
-        }
-        
-        return null;
     }
     
     /**
@@ -1106,25 +1062,6 @@ public class ConversationManager {
         } catch (Exception e) {
             plugin.getLogger().log(Level.WARNING, "停止任务接收时发生错误", e);
         }
-        
-        // 🔧 改进：异步保存数据，不阻塞关闭流程
-        CompletableFuture<Void> saveTask = CompletableFuture.runAsync(() -> {
-            try {
-                plugin.getLogger().info("保存对话历史数据...");
-                incrementalSave();
-                plugin.getLogger().info("对话历史数据保存完成");
-            } catch (Exception e) {
-                plugin.getLogger().log(Level.WARNING, "保存对话历史时发生错误", e);
-            }
-        }).orTimeout(10, TimeUnit.SECONDS) // 🔧 限制保存时间
-        .exceptionally(ex -> {
-            if (ex instanceof TimeoutException) {
-                plugin.getLogger().warning("保存对话历史超时，强制继续关闭流程");
-            } else {
-                plugin.getLogger().log(Level.WARNING, "保存对话历史失败", ex);
-            }
-            return null;
-        });
         
         // 🔧 改进：等待处理阶段线程池关闭
         boolean allStagesClosed = true;
@@ -1183,14 +1120,8 @@ public class ConversationManager {
             }
         }
         
-        // 🔧 改进：等待保存任务完成（有超时）
-        try {
-            saveTask.get(2, TimeUnit.SECONDS); // 再等2秒保存完成
-        } catch (TimeoutException e) {
-            plugin.getLogger().warning("等待保存任务完成超时");
-        } catch (Exception e) {
-            plugin.getLogger().log(Level.WARNING, "等待保存任务时发生错误", e);
-        }
+        // Workers have stopped; persist the final consistent history directly.
+        forceSaveAll();
         
         // 🔧 改进：清理所有数据结构
         try {
@@ -1242,7 +1173,9 @@ public class ConversationManager {
      * 获取玩家的对话历史
      */
     public List<com.example.aichatplugin.Message> getConversationHistory(UUID playerId) {
-        return conversationHistory.getOrDefault(playerId, new ArrayList<>());
+        List<com.example.aichatplugin.Message> history = conversationHistory.get(playerId);
+        if (history == null) return new ArrayList<>();
+        synchronized (history) { return new ArrayList<>(history); }
     }
     
     /**
@@ -1343,9 +1276,11 @@ public class ConversationManager {
     }
 
     private class ResponseTask {
+        private final UUID recipient;
         private final String response;
         
-        ResponseTask(String response) {
+        ResponseTask(UUID recipient, String response) {
+            this.recipient = recipient;
             this.response = response;
         }
         
@@ -1358,8 +1293,11 @@ public class ConversationManager {
                 
                 // 安全的消息广播方式：遍历所有玩家并单独发送
                 Runnable broadcastTask = () -> {
-                    for (Player player : Bukkit.getOnlinePlayers()) {
-                        player.sendMessage(messageToSend);
+                    if (config.isBroadcastEnabled()) {
+                        for (Player player : Bukkit.getOnlinePlayers()) player.sendMessage(messageToSend);
+                    } else {
+                        Player player = Bukkit.getPlayer(recipient);
+                        if (player != null && player.isOnline()) player.sendMessage(messageToSend);
                     }
                     plugin.debug("已向所有在线玩家发送AI响应: " + response);
                 };
@@ -1377,46 +1315,9 @@ public class ConversationManager {
     }
 
     public void handlePlayerQuit(Player player) {
-        if (!plugin.isEnabled()) return;
-        
+        // A quit event must never wait for an external AI request.
         UUID playerId = player.getUniqueId();
-        List<com.example.aichatplugin.Message> history = getConversationHistory(playerId);
-        StringBuilder fullPrompt = new StringBuilder();
-        
-        // 添加历史消息（最近3条）
-        int startIndex = Math.max(0, history.size() - 3);
-        if (history.isEmpty()) {
-            fullPrompt.append("新对话开始\n");
-        } else {
-            for (int i = startIndex; i < history.size(); i++) {
-                com.example.aichatplugin.Message msg = history.get(i);
-                // 使用一致的格式标识角色
-                if (msg.isAI()) {
-                    fullPrompt.append("你（AI助手）: ").append(msg.getContent()).append("\n");
-                } else if (msg.getSender().equals("SYSTEM")) {
-                    fullPrompt.append("系统事件: ").append(msg.getContent()).append("\n");
-                } else {
-                    fullPrompt.append("玩家").append(msg.getSender()).append(": ").append(msg.getContent()).append("\n");
-                }
-            }
-        }
-        
-        // 添加退出消息（包含玩家名）
-        String quitMessage = player.getName() + " 离开了游戏";
-        fullPrompt.append("系统事件: ").append(quitMessage).append("\n");
-        
-        // 生成响应
-        String response = generateResponseWithRetry(fullPrompt.toString(), player);
-        if (response != null && !response.isEmpty()) {
-            addMessage(playerId, "SYSTEM", quitMessage, false);
-            addMessage(playerId, "AI", response, true);
-            responseQueue.offer(new ResponseTask(response));
-        }
-        
-        // 清理玩家队列
         playerQueues.remove(playerId);
-        
-        // 清理玩家相关的环境收集缓存
         lastEnvironmentCollection.remove(playerId);
         lastKnownLocation.remove(playerId);
     }
@@ -1569,24 +1470,13 @@ public class ConversationManager {
      * 用于立即保存而不等待定时器
      */
     public void forceSaveAll() {
-        plugin.getLogger().info("强制保存所有历史记录...");
-        
-        if (dirtyPlayers.isEmpty()) {
-            plugin.getLogger().info("没有需要保存的历史记录");
-            return;
+        for (UUID playerId : new HashSet<>(dirtyPlayers)) {
+            try {
+                savePlayerHistory(playerId);
+            } catch (Exception e) {
+                plugin.getLogger().log(Level.SEVERE, "无法保存玩家历史: " + playerId, e);
+            }
         }
-        
-        plugin.getLogger().info("正在保存 " + dirtyPlayers.size() + " 个玩家的历史记录");
-        incrementalSave();
-        
-        // 等待保存完成
-        try {
-            Thread.sleep(1000); // 等待1秒让异步保存完成
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-        
-        plugin.getLogger().info("强制保存完成");
     }
     
     /**
@@ -1637,7 +1527,7 @@ public class ConversationManager {
         Location currentLoc = player.getLocation();
         Location lastLoc = lastKnownLocation.get(playerId);
         double changeThreshold = config.getLocationChangeThreshold();
-        if (lastLoc != null && currentLoc.distance(lastLoc) > changeThreshold) {
+        if (lastLoc != null && (!Objects.equals(currentLoc.getWorld(), lastLoc.getWorld()) || currentLoc.distance(lastLoc) > changeThreshold)) {
             return true;
         }
         
@@ -1685,7 +1575,7 @@ public class ConversationManager {
         Location currentLoc = player.getLocation();
         Location lastLoc = lastKnownLocation.get(playerId);
         double changeThreshold = config.getLocationChangeThreshold();
-        if (lastLoc != null && currentLoc.distance(lastLoc) > changeThreshold) {
+        if (lastLoc != null && (!Objects.equals(currentLoc.getWorld(), lastLoc.getWorld()) || currentLoc.distance(lastLoc) > changeThreshold)) {
             return "位置变化超过" + changeThreshold + "格";
         }
         
